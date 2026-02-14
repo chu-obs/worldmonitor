@@ -8,6 +8,8 @@
  */
 
 import { Redis } from '@upstash/redis';
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonBody } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -54,41 +56,57 @@ function getSeverity(zScore) {
 }
 
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'GET, POST, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return jsonBody({ error: 'Origin not allowed' }, {
+      status: 403,
+      corsHeaders,
+    });
+  }
+
   const r = getRedis();
   if (!r) {
-    return new Response(JSON.stringify({ error: 'Redis not configured' }), {
+    return jsonBody({ error: 'Redis not configured' }, {
       status: 503,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 
   try {
     if (request.method === 'GET') {
-      return await handleGet(r, request);
+      return await handleGet(r, request, corsHeaders);
     } else if (request.method === 'POST') {
-      return await handlePost(r, request);
+      return await handlePost(r, request, corsHeaders);
     }
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonBody({ error: 'Method not allowed' }, {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   } catch (err) {
     console.error('[TemporalBaseline] Error:', err);
-    return new Response(JSON.stringify({ error: 'Internal error' }), {
+    return jsonBody({ error: 'Internal error' }, {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 }
 
-async function handleGet(r, request) {
+async function handleGet(r, request, corsHeaders) {
   const { searchParams } = new URL(request.url);
   const type = searchParams.get('type');
   const region = searchParams.get('region') || 'global';
   const count = parseFloat(searchParams.get('count'));
 
   if (!type || !VALID_TYPES.includes(type) || isNaN(count)) {
-    return json({ error: 'Missing or invalid params: type, count required' }, 400);
+    return json({ error: 'Missing or invalid params: type, count required' }, 400, corsHeaders);
   }
 
   const now = new Date();
@@ -104,7 +122,7 @@ async function handleGet(r, request) {
       learning: true,
       sampleCount: baseline?.sampleCount || 0,
       samplesNeeded: MIN_SAMPLES,
-    });
+    }, 200, corsHeaders);
   }
 
   const variance = Math.max(0, baseline.m2 / (baseline.sampleCount - 1));
@@ -127,15 +145,15 @@ async function handleGet(r, request) {
       sampleCount: baseline.sampleCount,
     },
     learning: false,
-  });
+  }, 200, corsHeaders);
 }
 
-async function handlePost(r, request) {
+async function handlePost(r, request, corsHeaders) {
   const body = await request.json();
   const updates = body?.updates;
 
   if (!Array.isArray(updates) || updates.length === 0) {
-    return json({ error: 'Body must have updates array' }, 400);
+    return json({ error: 'Body must have updates array' }, 400, corsHeaders);
   }
 
   // Cap batch size
@@ -179,15 +197,13 @@ async function handlePost(r, request) {
     await pipeline.exec();
   }
 
-  return json({ updated });
+  return json({ updated }, 200, corsHeaders);
 }
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
+function json(data, status = 200, corsHeaders = {}) {
+  return jsonBody(data, {
     status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
-    },
+    corsHeaders,
+    cacheControl: 'no-store',
   });
 }

@@ -7,6 +7,9 @@
  */
 
 import { Redis } from '@upstash/redis';
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonBody, jsonError, jsonOk } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -15,6 +18,13 @@ export const config = {
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const MODEL = 'meta-llama/llama-3.3-70b-instruct:free';
 const CACHE_TTL_SECONDS = 86400; // 24 hours
+const RATE_LIMIT = 10; // requests / minute / IP
+const RATE_WINDOW_MS = 60 * 1000;
+const rateLimiter = createIpRateLimiter({
+  limit: RATE_LIMIT,
+  windowMs: RATE_WINDOW_MS,
+  maxEntries: 5000,
+});
 
 // Initialize Redis (lazy - only if env vars present)
 let redis = null;
@@ -84,20 +94,53 @@ function deduplicateHeadlines(headlines) {
   return unique;
 }
 
+function getClientIp(req) {
+  return req.headers.get('x-forwarded-for')?.split(',')[0] ||
+    req.headers.get('x-real-ip') ||
+    'unknown';
+}
+
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'POST, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
   // Only allow POST
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return jsonError('Origin not allowed', {
+      status: 403,
+      code: 'origin_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  const ip = getClientIp(request);
+  if (!rateLimiter.check(ip)) {
+    return jsonBody({ error: 'Rate limited', fallback: true }, {
+      status: 429,
+      corsHeaders,
+      extraHeaders: { 'Retry-After': '60' },
     });
   }
 
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'OpenRouter API key not configured', fallback: true }), {
+    return jsonBody({ error: 'OpenRouter API key not configured', fallback: true }, {
       status: 503,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 
@@ -105,9 +148,10 @@ export default async function handler(request) {
     const { headlines, mode = 'brief', geoContext = '', variant = 'full' } = await request.json();
 
     if (!headlines || !Array.isArray(headlines) || headlines.length === 0) {
-      return new Response(JSON.stringify({ error: 'Headlines array required' }), {
+      return jsonError('Headlines array required', {
         status: 400,
-        headers: { 'Content-Type': 'application/json' },
+        code: 'invalid_headlines',
+        corsHeaders,
       });
     }
 
@@ -120,14 +164,14 @@ export default async function handler(request) {
         const cached = await redisClient.get(cacheKey);
         if (cached && typeof cached === 'object' && cached.summary) {
           console.log('[OpenRouter] Cache hit:', cacheKey);
-          return new Response(JSON.stringify({
+          return jsonOk({
             summary: cached.summary,
             model: cached.model || MODEL,
             provider: 'cache',
             cached: true,
-          }), {
+          }, {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            corsHeaders,
           });
         }
       } catch (cacheError) {
@@ -232,15 +276,15 @@ Rules:
 
       // Return fallback signal for rate limiting
       if (response.status === 429) {
-        return new Response(JSON.stringify({ error: 'Rate limited', fallback: true }), {
+        return jsonBody({ error: 'Rate limited', fallback: true }, {
           status: 429,
-          headers: { 'Content-Type': 'application/json' },
+          corsHeaders,
         });
       }
 
-      return new Response(JSON.stringify({ error: 'OpenRouter API error', fallback: true }), {
+      return jsonBody({ error: 'OpenRouter API error', fallback: true }, {
         status: response.status,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
@@ -248,9 +292,9 @@ Rules:
     const summary = data.choices?.[0]?.message?.content?.trim();
 
     if (!summary) {
-      return new Response(JSON.stringify({ error: 'Empty response', fallback: true }), {
+      return jsonBody({ error: 'Empty response', fallback: true }, {
         status: 500,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
@@ -268,25 +312,26 @@ Rules:
       }
     }
 
-    return new Response(JSON.stringify({
+    return jsonOk({
       summary,
       model: MODEL,
       provider: 'openrouter',
       cached: false,
       tokens: data.usage?.total_tokens || 0,
-    }), {
+    }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=1800',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=1800',
     });
 
   } catch (error) {
     console.error('[OpenRouter] Error:', error);
-    return new Response(JSON.stringify({ error: error.message, fallback: true }), {
+    return jsonBody({
+      error: error instanceof Error ? error.message : String(error),
+      fallback: true,
+    }, {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 }

@@ -1,6 +1,22 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonRaw } from './_response.js';
 
-export default async function handler() {
+export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   try {
     const response = await fetch(
       'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson',
@@ -12,18 +28,17 @@ export default async function handler() {
     );
 
     const data = await response.text();
-    return new Response(data, {
+    return jsonRaw(data, {
       status: response.status,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=300',
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to fetch data' }), {
+    return jsonError('Failed to fetch data', {
       status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
     });
   }
 }

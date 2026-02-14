@@ -1,5 +1,8 @@
 export const config = { runtime: 'edge' };
 
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonRaw } from './_response.js';
+
 const ALLOWED_ORDER = ['volume', 'liquidity', 'startDate', 'endDate', 'spread'];
 const MAX_LIMIT = 100;
 const MIN_LIMIT = 1;
@@ -25,6 +28,20 @@ function sanitizeTagSlug(val) {
 }
 
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   const url = new URL(req.url);
   const endpoint = url.searchParams.get('endpoint') || 'markets';
 
@@ -55,18 +72,17 @@ export default async function handler(req) {
     });
 
     const data = await response.text();
-    return new Response(data, {
+    return jsonRaw(data, {
       status: response.status,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=120',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=120',
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to fetch data' }), {
+    return jsonError('Failed to fetch data', {
       status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
     });
   }
 }

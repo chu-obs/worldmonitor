@@ -1,4 +1,5 @@
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonError, jsonRaw, jsonOk } from './_response.js';
 export const config = { runtime: 'edge' };
 
 function clampLimit(rawLimit) {
@@ -12,22 +13,24 @@ export default async function handler(req) {
 
   if (req.method === 'OPTIONS') {
     if (isDisallowedOrigin(req)) {
-      return new Response(null, { status: 403, headers: corsHeaders });
+      return empty(403, corsHeaders);
     }
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return empty(204, corsHeaders);
   }
 
   if (req.method !== 'GET') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'method_not_allowed',
+      corsHeaders,
     });
   }
 
   if (isDisallowedOrigin(req)) {
-    return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+    return jsonError('Origin not allowed', {
       status: 403,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'origin_not_allowed',
+      corsHeaders,
     });
   }
 
@@ -38,9 +41,9 @@ export default async function handler(req) {
   const token = process.env.CLOUDFLARE_API_TOKEN;
   if (!token) {
     // Signal to client that outages feature is not configured
-    return new Response(JSON.stringify({ configured: false }), {
+    return jsonOk({ configured: false }, {
       status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      corsHeaders,
     });
   }
 
@@ -50,15 +53,15 @@ export default async function handler(req) {
       { headers: { 'Authorization': `Bearer ${token}` } }
     );
     const data = await response.text();
-    return new Response(data, {
+    return jsonRaw(data, {
       status: response.status,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      corsHeaders,
     });
   } catch (error) {
     // Return empty result on error so client circuit breaker doesn't trigger unnecessarily
-    return new Response(JSON.stringify({ success: true, result: { annotations: [] } }), {
+    return jsonOk({ success: true, result: { annotations: [] } }, {
       status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      corsHeaders,
     });
   }
 }

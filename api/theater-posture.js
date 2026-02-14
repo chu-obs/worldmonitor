@@ -5,6 +5,8 @@
  */
 
 import { Redis } from '@upstash/redis';
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonBody, jsonError } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -505,15 +507,18 @@ function calculatePostures(flights) {
 }
 
 export default async function handler(req) {
-  // CORS headers
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
 
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
   }
 
   try {
@@ -524,14 +529,12 @@ export default async function handler(req) {
         const cached = await redisClient.get(CACHE_KEY);
         if (cached) {
           console.log('[TheaterPosture] Cache hit');
-          return Response.json({
+          return jsonBody({
             ...cached,
             cached: true,
           }, {
-            headers: {
-              ...corsHeaders,
-              'Cache-Control': 'public, max-age=60',
-            },
+            corsHeaders,
+            cacheControl: 'public, max-age=60',
           });
         }
       } catch (err) {
@@ -584,11 +587,9 @@ export default async function handler(req) {
       }
     }
 
-    return Response.json(result, {
-      headers: {
-        ...corsHeaders,
-        'Cache-Control': 'public, max-age=60',
-      },
+    return jsonBody(result, {
+      corsHeaders,
+      cacheControl: 'public, max-age=60',
     });
   } catch (error) {
     console.warn('[TheaterPosture] Error:', error.message);
@@ -601,16 +602,14 @@ export default async function handler(req) {
         const stale = await staleRedisClient.get(STALE_CACHE_KEY);
         if (stale) {
           console.log('[TheaterPosture] Returning stale cached data (24h) due to API error');
-          return Response.json({
+          return jsonBody({
             ...stale,
             cached: true,
             stale: true,
             error: 'Using cached data - live feed temporarily unavailable',
           }, {
-            headers: {
-              ...corsHeaders,
-              'Cache-Control': 'public, max-age=30',
-            },
+            corsHeaders,
+            cacheControl: 'public, max-age=30',
           });
         }
       } catch (cacheErr) {
@@ -622,16 +621,14 @@ export default async function handler(req) {
         const backup = await staleRedisClient.get(BACKUP_CACHE_KEY);
         if (backup) {
           console.log('[TheaterPosture] Returning backup cached data (7d) due to API error');
-          return Response.json({
+          return jsonBody({
             ...backup,
             cached: true,
             stale: true,
             error: 'Using backup data - live feed temporarily unavailable',
           }, {
-            headers: {
-              ...corsHeaders,
-              'Cache-Control': 'public, max-age=30',
-            },
+            corsHeaders,
+            cacheControl: 'public, max-age=30',
           });
         }
       } catch (cacheErr) {
@@ -640,13 +637,14 @@ export default async function handler(req) {
     }
 
     // No cached data available - return error
-    return Response.json({
-      error: error.message,
+    return jsonBody({
+      error: error instanceof Error ? error.message : String(error),
       postures: [],
       timestamp: new Date().toISOString(),
     }, {
       status: 500,
-      headers: corsHeaders,
+      corsHeaders,
+      cacheControl: 'public, max-age=30',
     });
   }
 }

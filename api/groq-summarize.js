@@ -6,6 +6,9 @@
  */
 
 import { Redis } from '@upstash/redis';
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonBody, jsonError, jsonOk } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -14,6 +17,13 @@ export const config = {
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = 'llama-3.1-8b-instant'; // 14.4K RPD vs 1K for 70b
 const CACHE_TTL_SECONDS = 86400; // 24 hours
+const RATE_LIMIT = 30; // requests / minute / IP
+const RATE_WINDOW_MS = 60 * 1000;
+const rateLimiter = createIpRateLimiter({
+  limit: RATE_LIMIT,
+  windowMs: RATE_WINDOW_MS,
+  maxEntries: 5000,
+});
 
 // Initialize Redis (lazy - only if env vars present)
 let redis = null;
@@ -93,20 +103,53 @@ function deduplicateHeadlines(headlines) {
   return unique;
 }
 
+function getClientIp(req) {
+  return req.headers.get('x-forwarded-for')?.split(',')[0] ||
+    req.headers.get('x-real-ip') ||
+    'unknown';
+}
+
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'POST, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
   // Only allow POST
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return jsonError('Origin not allowed', {
+      status: 403,
+      code: 'origin_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  const ip = getClientIp(request);
+  if (!rateLimiter.check(ip)) {
+    return jsonBody({ error: 'Rate limited', fallback: true }, {
+      status: 429,
+      corsHeaders,
+      extraHeaders: { 'Retry-After': '60' },
     });
   }
 
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'Groq API key not configured', fallback: true }), {
+    return jsonBody({ error: 'Groq API key not configured', fallback: true }, {
       status: 503,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 
@@ -114,9 +157,10 @@ export default async function handler(request) {
     const { headlines, mode = 'brief', geoContext = '', variant = 'full' } = await request.json();
 
     if (!headlines || !Array.isArray(headlines) || headlines.length === 0) {
-      return new Response(JSON.stringify({ error: 'Headlines array required' }), {
+      return jsonError('Headlines array required', {
         status: 400,
-        headers: { 'Content-Type': 'application/json' },
+        code: 'invalid_headlines',
+        corsHeaders,
       });
     }
 
@@ -129,14 +173,14 @@ export default async function handler(request) {
         const cached = await redisClient.get(cacheKey);
         if (cached && typeof cached === 'object' && cached.summary) {
           console.log('[Groq] Cache hit:', cacheKey);
-          return new Response(JSON.stringify({
+          return jsonOk({
             summary: cached.summary,
             model: cached.model || MODEL,
             provider: 'cache',
             cached: true,
-          }), {
+          }, {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            corsHeaders,
           });
         }
       } catch (cacheError) {
@@ -239,15 +283,15 @@ Rules:
 
       // Return fallback signal for rate limiting
       if (response.status === 429) {
-        return new Response(JSON.stringify({ error: 'Rate limited', fallback: true }), {
+        return jsonBody({ error: 'Rate limited', fallback: true }, {
           status: 429,
-          headers: { 'Content-Type': 'application/json' },
+          corsHeaders,
         });
       }
 
-      return new Response(JSON.stringify({ error: 'Groq API error', fallback: true }), {
+      return jsonBody({ error: 'Groq API error', fallback: true }, {
         status: response.status,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
@@ -255,9 +299,9 @@ Rules:
     const summary = data.choices?.[0]?.message?.content?.trim();
 
     if (!summary) {
-      return new Response(JSON.stringify({ error: 'Empty response', fallback: true }), {
+      return jsonBody({ error: 'Empty response', fallback: true }, {
         status: 500,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
@@ -275,29 +319,31 @@ Rules:
       }
     }
 
-    return new Response(JSON.stringify({
+    return jsonOk({
       summary,
       model: MODEL,
       provider: 'groq',
       cached: false,
       tokens: data.usage?.total_tokens || 0,
-    }), {
+    }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=1800',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=1800',
     });
 
   } catch (error) {
-    console.error('[Groq] Error:', error.name, error.message, error.stack?.split('\n')[1]);
-    return new Response(JSON.stringify({
-      error: error.message,
-      errorType: error.name,
+    if (error instanceof Error) {
+      console.error('[Groq] Error:', error.name, error.message, error.stack?.split('\n')[1]);
+    } else {
+      console.error('[Groq] Error:', String(error));
+    }
+    return jsonBody({
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.name : 'UnknownError',
       fallback: true
     }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 }

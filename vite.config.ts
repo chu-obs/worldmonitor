@@ -10,7 +10,7 @@ const VARIANT_META: Record<string, {
   siteName: string;
   features: string[];
 }> = {
-  world: {
+  full: {
     title: 'World Monitor - Real-Time Global Intelligence Dashboard',
     description: 'Real-time global intelligence dashboard with live news, markets, military tracking, infrastructure monitoring, and geopolitical data. OSINT in one view.',
     keywords: 'global intelligence, geopolitical dashboard, world news, market data, military bases, nuclear facilities, undersea cables, conflict zones, real-time monitoring, situation awareness, OSINT, flight tracking, AIS ships, earthquake monitor, protest tracker, power outages, oil prices, government spending, polymarket predictions',
@@ -54,8 +54,9 @@ const VARIANT_META: Record<string, {
 };
 
 function htmlVariantPlugin(): Plugin {
-  const variant = process.env.VITE_VARIANT || 'world';
-  const meta = VARIANT_META[variant] || VARIANT_META.world;
+  const rawVariant = process.env.VITE_VARIANT || 'full';
+  const variant = rawVariant === 'world' ? 'full' : rawVariant;
+  const meta = VARIANT_META[variant] || VARIANT_META.full;
 
   return {
     name: 'html-variant',
@@ -130,28 +131,30 @@ export default defineConfig({
     },
   },
   build: {
+    chunkSizeWarningLimit: 1100,
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
         settings: resolve(__dirname, 'settings.html'),
       },
       output: {
-        manualChunks(id) {
-          if (id.includes('node_modules')) {
-            if (id.includes('/@xenova/transformers/') || id.includes('/onnxruntime-web/')) {
-              return 'ml';
-            }
-            if (id.includes('/@deck.gl/') || id.includes('/maplibre-gl/') || id.includes('/h3-js/')) {
-              return 'map';
-            }
-            if (id.includes('/d3/')) {
-              return 'd3';
-            }
-            if (id.includes('/topojson-client/')) {
-              return 'topojson';
-            }
+        manualChunks(id: string) {
+          if (
+            id.includes('/src/components/Map.ts')
+            || id.includes('/src/components/DeckGLMap.ts')
+            || id.includes('/src/components/MapContainer.ts')
+            || id.includes('/src/components/MapPopup.ts')
+            || id.includes('/src/components/map/')
+          ) {
+            return 'app-map';
           }
-          return undefined;
+          if (!id.includes('node_modules')) return;
+          if (id.includes('/@deck.gl/') || id.includes('/deck.gl/')) return 'vendor-deckgl';
+          if (id.includes('/@loaders.gl/')) return 'vendor-deckgl';
+          if (id.includes('/maplibre-gl/')) return 'vendor-maplibre';
+          if (id.includes('/@xenova/transformers/') || id.includes('/onnxruntime-web/')) return 'vendor-ml';
+          if (id.includes('/topojson-client/')) return 'vendor-topojson';
+          if (id.includes('/d3/')) return 'vendor-d3';
         },
       },
     },

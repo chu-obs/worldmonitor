@@ -1,9 +1,25 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 const MAX_RECORDS = 20;
 const DEFAULT_RECORDS = 10;
 
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   const url = new URL(req.url);
   const query = url.searchParams.get('query');
   const maxrecords = Math.min(
@@ -13,9 +29,10 @@ export default async function handler(req) {
   const timespan = url.searchParams.get('timespan') || '72h';
 
   if (!query || query.length < 2) {
-    return new Response(JSON.stringify({ error: 'Query parameter required' }), {
+    return jsonError('Query parameter required', {
       status: 400,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'missing_query',
+      corsHeaders,
     });
   }
 
@@ -46,18 +63,20 @@ export default async function handler(req) {
       tone: article.tone,
     }));
 
-    return new Response(JSON.stringify({ articles, query }), {
+    return jsonOk({ articles, query }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=300',
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message, articles: [] }), {
+    return jsonError('Failed to fetch GDELT data', {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'fetch_failed',
+      details: {
+        message: error instanceof Error ? error.message : String(error),
+        articles: [],
+      },
+      corsHeaders,
     });
   }
 }

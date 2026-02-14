@@ -1,8 +1,24 @@
 // OpenSky Network API proxy - v3
 // Note: OpenSky seems to block some cloud provider IPs
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonBody, jsonError, jsonOk } from './_response.js';
 
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   const url = new URL(req.url);
 
   // Build OpenSky API URL with bounding box params
@@ -27,41 +43,39 @@ export default async function handler(req) {
     });
 
     if (response.status === 429) {
-      return Response.json({ error: 'Rate limited', time: Date.now(), states: null }, {
+      return jsonBody({ error: 'Rate limited', time: Date.now(), states: null }, {
         status: 429,
-        headers: { 'Access-Control-Allow-Origin': '*' },
+        corsHeaders,
       });
     }
 
     // Check if response is OK
     if (!response.ok) {
       const text = await response.text();
-      return Response.json({
+      return jsonBody({
         error: `OpenSky HTTP ${response.status}: ${text.substring(0, 200)}`,
         time: Date.now(),
         states: null
       }, {
         status: response.status,
-        headers: { 'Access-Control-Allow-Origin': '*' },
+        corsHeaders,
       });
     }
 
     const data = await response.json();
-    return Response.json(data, {
+    return jsonOk(data, {
       status: response.status,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=30',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=30',
     });
   } catch (error) {
-    return Response.json({
-      error: `Fetch failed: ${error.name} - ${error.message}`,
+    return jsonBody({
+      error: `Fetch failed: ${error instanceof Error ? `${error.name} - ${error.message}` : String(error)}`,
       time: Date.now(),
       states: null
     }, {
       status: 500,
-      headers: { 'Access-Control-Allow-Origin': '*' },
+      corsHeaders,
     });
   }
 }

@@ -1,8 +1,24 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError } from './_response.js';
 
 // Fetch AI/ML papers from ArXiv
 // Categories: cs.AI, cs.LG (Machine Learning), cs.CL (Computation and Language)
 export default async function handler(request) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (request.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const category = searchParams.get('category') || 'cs.AI'; // cs.AI, cs.LG, cs.CL
@@ -32,23 +48,16 @@ export default async function handler(request) {
       status: 200,
       headers: {
         'Content-Type': 'application/xml',
-        'Access-Control-Allow-Origin': '*',
+        ...corsHeaders,
         'Cache-Control': 'public, max-age=3600', // 1 hour cache
       },
     });
   } catch (error) {
-    return new Response(
-      JSON.stringify({
-        error: 'Failed to fetch ArXiv data',
-        message: error.message
-      }),
-      {
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-      }
-    );
+    return jsonError('Failed to fetch ArXiv data', {
+      status: 500,
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
+    });
   }
 }

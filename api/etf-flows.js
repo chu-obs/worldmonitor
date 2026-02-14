@@ -1,6 +1,7 @@
 export const config = { runtime: 'edge' };
 
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 const CACHE_TTL = 900;
 let cachedResponse = null;
@@ -98,18 +99,30 @@ export default async function handler(req) {
   const cors = getCorsHeaders(req);
   if (req.method === 'OPTIONS') {
     if (isDisallowedOrigin(req)) {
-      return new Response(null, { status: 403, headers: cors });
+      return empty(403, cors);
     }
-    return new Response(null, { status: 204, headers: cors });
+    return empty(204, cors);
+  }
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders: cors,
+    });
   }
   if (isDisallowedOrigin(req)) {
-    return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403, headers: { ...cors, 'Content-Type': 'application/json' } });
+    return jsonError('Origin not allowed', {
+      status: 403,
+      code: 'origin_not_allowed',
+      corsHeaders: cors,
+    });
   }
 
   const now = Date.now();
   if (cachedResponse && now - cacheTimestamp < CACHE_TTL * 1000) {
-    return new Response(JSON.stringify(cachedResponse), {
-      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=1800` },
+    return jsonOk(cachedResponse, {
+      corsHeaders: cors,
+      cacheControl: `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=1800`,
     });
   }
 
@@ -148,16 +161,18 @@ export default async function handler(req) {
     cachedResponse = result;
     cacheTimestamp = now;
 
-    return new Response(JSON.stringify(result), {
-      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=1800` },
+    return jsonOk(result, {
+      corsHeaders: cors,
+      cacheControl: `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=1800`,
     });
   } catch (err) {
+    console.warn('[ETF Flows] Fetch failed, serving fallback:', err);
     const fallback = cachedResponse || buildFallbackResult();
     cachedResponse = fallback;
     cacheTimestamp = now;
-    return new Response(JSON.stringify(fallback), {
-      status: 200,
-      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, s-maxage=60' },
+    return jsonOk(fallback, {
+      corsHeaders: cors,
+      cacheControl: 'public, s-maxage=60',
     });
   }
 }

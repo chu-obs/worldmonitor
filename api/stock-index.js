@@ -5,6 +5,8 @@
  */
 
 import { Redis } from '@upstash/redis';
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -80,10 +82,28 @@ function getRedis() {
 }
 
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'GET, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
   if (request.method !== 'GET') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return jsonError('Origin not allowed', {
+      status: 403,
+      code: 'origin_not_allowed',
+      corsHeaders,
     });
   }
 
@@ -91,17 +111,18 @@ export default async function handler(request) {
   const code = (url.searchParams.get('code') || '').toUpperCase();
 
   if (!code) {
-    return new Response(JSON.stringify({ error: 'code parameter required' }), {
+    return jsonError('code parameter required', {
       status: 400,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'missing_code',
+      corsHeaders,
     });
   }
 
   const index = COUNTRY_INDEX[code];
   if (!index) {
-    return new Response(JSON.stringify({ error: 'No stock index for country', code, available: false }), {
+    return jsonOk({ error: 'No stock index for country', code, available: false }, {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 
@@ -112,9 +133,9 @@ export default async function handler(request) {
     try {
       const cached = await redisClient.get(cacheKey);
       if (cached && typeof cached === 'object' && cached.indexName) {
-        return new Response(JSON.stringify({ ...cached, cached: true }), {
+        return jsonOk({ ...cached, cached: true }, {
           status: 200,
-          headers: { 'Content-Type': 'application/json' },
+          corsHeaders,
         });
       }
     } catch (e) {
@@ -135,26 +156,28 @@ export default async function handler(request) {
 
     if (!res.ok) {
       console.error('[StockIndex] Yahoo error:', res.status, index.symbol);
-      return new Response(JSON.stringify({ error: 'Upstream error', available: false }), {
+      return jsonError('Upstream error', {
         status: 502,
-        headers: { 'Content-Type': 'application/json' },
+        code: 'upstream_error',
+        details: { available: false },
+        corsHeaders,
       });
     }
 
     const data = await res.json();
     const result = data?.chart?.result?.[0];
     if (!result) {
-      return new Response(JSON.stringify({ error: 'No data', available: false }), {
+      return jsonOk({ error: 'No data', available: false }, {
         status: 200,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
     const allCloses = result.indicators?.quote?.[0]?.close?.filter(v => v != null);
     if (!allCloses || allCloses.length < 2) {
-      return new Response(JSON.stringify({ error: 'Insufficient data', available: false }), {
+      return jsonOk({ error: 'Insufficient data', available: false }, {
         status: 200,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
@@ -184,15 +207,17 @@ export default async function handler(request) {
       }
     }
 
-    return new Response(JSON.stringify(payload), {
+    return jsonOk(payload, {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   } catch (err) {
     console.error('[StockIndex] Error:', err);
-    return new Response(JSON.stringify({ error: 'Internal error', available: false }), {
+    return jsonError('Internal error', {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'internal_error',
+      details: { available: false },
+      corsHeaders,
     });
   }
 }

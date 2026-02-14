@@ -986,11 +986,21 @@ const isVisualScenarioReady = (scenarioId: string): boolean => {
 seedAllDynamicData();
 
 let ready = false;
+const HARNESS_READY_FALLBACK_MS = 8000;
+const harnessReadyStart = Date.now();
 const pollReady = (): void => {
   const hasCanvas = Boolean(document.querySelector('#deckgl-basemap canvas'));
   const maplibreMap = internals.maplibreMap;
+  const styleLoaded = maplibreMap?.isStyleLoaded() ?? false;
+  const hasStableCamera = (() => {
+    if (!maplibreMap) return false;
+    const center = maplibreMap.getCenter();
+    const zoom = maplibreMap.getZoom();
+    return Number.isFinite(center.lat) && Number.isFinite(center.lng) && Number.isFinite(zoom);
+  })();
+  const styleTimedOut = Date.now() - harnessReadyStart >= HARNESS_READY_FALLBACK_MS;
 
-  if (hasCanvas && maplibreMap?.isStyleLoaded()) {
+  if (hasCanvas && maplibreMap && (styleLoaded || (styleTimedOut && hasStableCamera))) {
     if (!deterministicVisualModeEnabled) {
       enableDeterministicVisualMode();
     }

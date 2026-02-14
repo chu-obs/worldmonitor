@@ -1,19 +1,37 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonRaw } from './_response.js';
 
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   try {
     const response = await fetch(
       'https://msi.nga.mil/api/publications/broadcast-warn?output=json&status=A'
     );
     const data = await response.text();
-    return new Response(data, {
+    return jsonRaw(data, {
       status: response.status,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      corsHeaders,
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    return jsonError('Failed to fetch data', {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
     });
   }
 }

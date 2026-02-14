@@ -2,6 +2,8 @@ export const config = { runtime: 'edge' };
 
 import { getCachedJson, hashString, setCachedJson } from './_upstash-cache.js';
 import { recordCacheTelemetry } from './_cache-telemetry.js';
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError } from './_response.js';
 
 const ALLOWED_CURRENCIES = ['usd', 'eur', 'gbp', 'jpy', 'cny', 'btc', 'eth'];
 const MAX_COIN_IDS = 20;
@@ -38,8 +40,8 @@ function validateBoolean(val, defaultVal) {
 
 function getHeaders(xCache, cacheControl = RESPONSE_CACHE_CONTROL) {
   return {
+    ...getWildcardCorsHeaders('GET, OPTIONS'),
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
     'Cache-Control': cacheControl,
     'X-Cache': xCache,
   };
@@ -55,6 +57,18 @@ function isValidPayload(payload) {
 }
 
 export default async function handler(req) {
+  if (req.method === 'OPTIONS') {
+    return empty(204, getWildcardCorsHeaders('GET, OPTIONS'));
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders: getWildcardCorsHeaders('GET, OPTIONS'),
+    });
+  }
+
   const url = new URL(req.url);
 
   const ids = validateCoinIds(url.searchParams.get('ids'));
@@ -141,9 +155,10 @@ export default async function handler(req) {
     }
 
     recordCacheTelemetry('/api/coingecko', 'ERROR');
-    return new Response(JSON.stringify({ error: 'Failed to fetch data' }), {
+    return jsonError('Failed to fetch data', {
       status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      code: 'fetch_failed',
+      corsHeaders: getWildcardCorsHeaders('GET, OPTIONS'),
     });
   }
 }

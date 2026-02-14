@@ -1,4 +1,5 @@
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 export const config = { runtime: 'edge' };
 
 const SYMBOL_PATTERN = /^[A-Za-z0-9.^]+$/;
@@ -54,31 +55,34 @@ export default async function handler(req) {
 
   if (req.method === 'OPTIONS') {
     if (isDisallowedOrigin(req)) {
-      return new Response(null, { status: 403, headers: corsHeaders });
+      return empty(403, corsHeaders);
     }
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return empty(204, corsHeaders);
   }
 
   if (req.method !== 'GET') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'method_not_allowed',
+      corsHeaders,
     });
   }
 
   if (isDisallowedOrigin(req)) {
-    return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+    return jsonError('Origin not allowed', {
       status: 403,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'origin_not_allowed',
+      corsHeaders,
     });
   }
 
   const apiKey = process.env.FINNHUB_API_KEY;
 
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'Finnhub API key not configured' }), {
+    return jsonError('Finnhub API key not configured', {
       status: 503,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'missing_api_key',
+      corsHeaders,
     });
   }
 
@@ -86,9 +90,10 @@ export default async function handler(req) {
   const symbols = validateSymbols(url.searchParams.get('symbols'));
 
   if (!symbols) {
-    return new Response(JSON.stringify({ error: 'Invalid or missing symbols parameter' }), {
+    return jsonError('Invalid or missing symbols parameter', {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'invalid_symbols',
+      corsHeaders,
     });
   }
 
@@ -98,18 +103,16 @@ export default async function handler(req) {
       symbols.map(symbol => fetchQuote(symbol, apiKey))
     );
 
-    return new Response(JSON.stringify({ quotes }), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=30',
-        ...corsHeaders,
-      },
+    return jsonOk({ quotes }, {
+      corsHeaders,
+      cacheControl: 'public, max-age=30',
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: 'Failed to fetch data' }), {
+    return jsonError('Failed to fetch data', {
       status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
     });
   }
 }

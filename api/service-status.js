@@ -1,4 +1,6 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 // Major tech services and their status page endpoints
 // Most use Statuspage.io which has a standard /api/v2/status.json endpoint
@@ -248,6 +250,20 @@ async function checkStatusPage(service) {
 }
 
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   const url = new URL(req.url);
   const category = url.searchParams.get('category'); // cloud, dev, comm, ai, saas, or all
 
@@ -270,7 +286,7 @@ export default async function handler(req) {
     unknown: results.filter(r => r.status === 'unknown').length,
   };
 
-  return new Response(JSON.stringify({
+  return jsonOk({
     success: true,
     timestamp: new Date().toISOString(),
     summary,
@@ -281,11 +297,8 @@ export default async function handler(req) {
       status: r.status,
       description: r.description,
     })),
-  }), {
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=60', // 1 min cache
-    },
+  }, {
+    corsHeaders,
+    cacheControl: 'public, max-age=60', // 1 min cache
   });
 }

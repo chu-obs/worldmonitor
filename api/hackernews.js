@@ -1,4 +1,6 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 // Fetch Hacker News front page stories
 // Uses official HackerNews Firebase API
@@ -14,6 +16,20 @@ function parseLimit(rawLimit) {
 }
 
 export default async function handler(request) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (request.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const requestedType = searchParams.get('type') || 'top';
@@ -61,32 +77,22 @@ export default async function handler(request) {
       stories.push(...batchResults.filter((story) => story !== null));
     }
 
-    return new Response(JSON.stringify({
+    return jsonOk({
       type: storyType,
       stories: stories,
       total: stories.length,
       timestamp: new Date().toISOString()
-    }), {
+    }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=300', // 5 min cache
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=300', // 5 min cache
     });
   } catch (error) {
-    return new Response(
-      JSON.stringify({
-        error: 'Failed to fetch Hacker News data',
-        message: error.message
-      }),
-      {
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-      }
-    );
+    return jsonError('Failed to fetch Hacker News data', {
+      status: 500,
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
+    });
   }
 }

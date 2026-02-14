@@ -1,4 +1,6 @@
 export const config = { runtime: 'edge' };
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonError } from './_response.js';
 
 // Fetch with timeout
 async function fetchWithTimeout(url, options, timeoutMs = 15000) {
@@ -156,41 +158,41 @@ const ALLOWED_DOMAINS = [
   'news.ycombinator.com',
 ];
 
-// CORS helper - allow worldmonitor.app and Vercel preview domains
-function getCorsHeaders(req) {
-  const origin = req.headers.get('origin') || '*';
-  const allowedPatterns = [
-    /^https:\/\/(.*\.)?worldmonitor\.app$/, // Matches worldmonitor.app and *.worldmonitor.app
-    /^https:\/\/.*-elie-habib-projects\.vercel\.app$/,
-    /^https:\/\/worldmonitor.*\.vercel\.app$/,
-    /^http:\/\/localhost(:\d+)?$/,
-  ];
-
-  const isAllowed = origin === '*' || allowedPatterns.some(p => p.test(origin));
-
-  return {
-    'Access-Control-Allow-Origin': isAllowed ? origin : 'https://worldmonitor.app',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Max-Age': '86400',
-  };
-}
-
 export default async function handler(req) {
-  const corsHeaders = getCorsHeaders(req);
+  const corsHeaders = getCorsHeaders(req, 'GET, OPTIONS');
 
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders });
+    if (isDisallowedOrigin(req)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  if (isDisallowedOrigin(req)) {
+    return jsonError('Origin not allowed', {
+      status: 403,
+      code: 'origin_not_allowed',
+      corsHeaders,
+    });
   }
 
   const requestUrl = new URL(req.url);
   const feedUrl = requestUrl.searchParams.get('url');
 
   if (!feedUrl) {
-    return new Response(JSON.stringify({ error: 'Missing url parameter' }), {
+    return jsonError('Missing url parameter', {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'missing_url',
+      corsHeaders,
     });
   }
 
@@ -199,9 +201,10 @@ export default async function handler(req) {
 
     // Security: Check if domain is allowed
     if (!ALLOWED_DOMAINS.includes(parsedUrl.hostname)) {
-      return new Response(JSON.stringify({ error: 'Domain not allowed' }), {
+      return jsonError('Domain not allowed', {
         status: 403,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        code: 'domain_not_allowed',
+        corsHeaders,
       });
     }
 
@@ -227,15 +230,14 @@ export default async function handler(req) {
       },
     });
   } catch (error) {
-    const isTimeout = error.name === 'AbortError';
-    console.error('RSS proxy error:', feedUrl, error.message);
-    return new Response(JSON.stringify({
-      error: isTimeout ? 'Feed timeout' : 'Failed to fetch feed',
-      details: error.message,
-      url: feedUrl
-    }), {
+    const isTimeout = error instanceof Error && error.name === 'AbortError';
+    const details = error instanceof Error ? error.message : String(error);
+    console.error('RSS proxy error:', feedUrl, details);
+    return jsonError(isTimeout ? 'Feed timeout' : 'Failed to fetch feed', {
       status: isTimeout ? 504 : 502,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: isTimeout ? 'feed_timeout' : 'fetch_failed',
+      details: { message: details, url: feedUrl },
+      corsHeaders,
     });
   }
 }

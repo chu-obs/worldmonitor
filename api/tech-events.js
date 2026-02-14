@@ -1,5 +1,7 @@
 // Tech Events API - Parses Techmeme ICS feed and dev.events RSS, returns structured events
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 const ICS_URL = 'https://www.techmeme.com/newsy_events.ics';
 const DEV_EVENTS_RSS = 'https://dev.events/rss.xml';
@@ -98,6 +100,8 @@ const CITY_COORDS = {
   'brooklyn': { lat: 40.6782, lng: -73.9442, country: 'USA' },
   'boston': { lat: 42.3601, lng: -71.0589, country: 'USA' },
   'cambridge': { lat: 42.3736, lng: -71.1097, country: 'USA' },
+  'cambridge, ma': { lat: 42.3736, lng: -71.1097, country: 'USA' },
+  'cambridge, massachusetts': { lat: 42.3736, lng: -71.1097, country: 'USA' },
   'chicago': { lat: 41.8781, lng: -87.6298, country: 'USA' },
   'austin': { lat: 30.2672, lng: -97.7431, country: 'USA' },
   'austin, tx': { lat: 30.2672, lng: -97.7431, country: 'USA' },
@@ -163,7 +167,8 @@ const CITY_COORDS = {
   'tijuana': { lat: 32.5149, lng: -117.0382, country: 'Mexico' },
   'cancun': { lat: 21.1619, lng: -86.8515, country: 'Mexico' },
   'panama city': { lat: 8.9824, lng: -79.5199, country: 'Panama' },
-  'san jose': { lat: 9.9281, lng: -84.0907, country: 'Costa Rica' },
+  'san jose, costa rica': { lat: 9.9281, lng: -84.0907, country: 'Costa Rica' },
+  'san jose, cr': { lat: 9.9281, lng: -84.0907, country: 'Costa Rica' },
 
   // South America
   'sao paulo': { lat: -23.5505, lng: -46.6333, country: 'Brazil' },
@@ -185,7 +190,8 @@ const CITY_COORDS = {
 
   // Europe - UK & Ireland
   'london': { lat: 51.5074, lng: -0.1278, country: 'UK' },
-  'cambridge': { lat: 52.2053, lng: 0.1218, country: 'UK' },
+  'cambridge, uk': { lat: 52.2053, lng: 0.1218, country: 'UK' },
+  'cambridge, england': { lat: 52.2053, lng: 0.1218, country: 'UK' },
   'oxford': { lat: 51.7520, lng: -1.2577, country: 'UK' },
   'manchester': { lat: 53.4808, lng: -2.2426, country: 'UK' },
   'birmingham': { lat: 52.4862, lng: -1.8904, country: 'UK' },
@@ -472,20 +478,38 @@ function normalizeLocation(location) {
 
   // Remove common suffixes/prefixes
   normalized = normalized.replace(/^hybrid:\s*/i, '');
-  normalized = normalized.replace(/,\s*(usa|us|uk|canada)$/i, '');
 
   // Direct lookup
   if (CITY_COORDS[normalized]) {
     return { ...CITY_COORDS[normalized], original: location };
   }
 
-  // Try removing state/country suffix
-  const parts = normalized.split(',');
+  // Try city + country exact lookup first (prevents ambiguous city collisions)
+  const parts = normalized.split(',').map(p => p.trim()).filter(Boolean);
   if (parts.length > 1) {
-    const city = parts[0].trim();
+    const city = parts[0];
+    const country = parts.slice(1).join(', ');
+    const cityCountry = `${city}, ${country}`;
+
+    if (CITY_COORDS[cityCountry]) {
+      return { ...CITY_COORDS[cityCountry], original: location };
+    }
+
+    const cityCountryCompact = `${city} ${country}`;
+    if (CITY_COORDS[cityCountryCompact]) {
+      return { ...CITY_COORDS[cityCountryCompact], original: location };
+    }
+
+    // Fallback to city-only after country-aware attempts
     if (CITY_COORDS[city]) {
       return { ...CITY_COORDS[city], original: location };
     }
+  }
+
+  // Legacy suffix-stripped fallback for entries like "City, USA"
+  const stripped = normalized.replace(/,\s*(usa|us|uk|canada)$/i, '');
+  if (stripped !== normalized && CITY_COORDS[stripped]) {
+    return { ...CITY_COORDS[stripped], original: location };
   }
 
   // Try fuzzy match (contains)
@@ -616,7 +640,27 @@ function parseDevEventsRSS(rssText) {
   return events;
 }
 
+export const __test = {
+  normalizeLocation,
+  parseICS,
+  parseDevEventsRSS,
+};
+
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   const url = new URL(req.url);
   const type = url.searchParams.get('type'); // 'all', 'conferences', 'earnings', 'ipo'
   const mappable = url.searchParams.get('mappable') === 'true'; // Only return events with coords
@@ -701,32 +745,28 @@ export default async function handler(req) {
     const conferences = events.filter(e => e.type === 'conference');
     const mappableCount = conferences.filter(e => e.coords && !e.coords.virtual).length;
 
-    return new Response(JSON.stringify({
+    return jsonOk({
       success: true,
       count: events.length,
       conferenceCount: conferences.length,
       mappableCount,
       lastUpdated: new Date().toISOString(),
       events,
-    }), {
+    }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, s-maxage=1800', // Cache for 30 minutes
-      },
+      corsHeaders,
+      cacheControl: 'public, s-maxage=1800', // Cache for 30 minutes
     });
   } catch (error) {
     console.error('Tech events error:', error);
-    return new Response(JSON.stringify({
-      success: false,
-      error: error.message,
-    }), {
+    return jsonError('Tech events failed', {
       status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
+      code: 'fetch_failed',
+      details: {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
       },
+      corsHeaders,
     });
   }
 }

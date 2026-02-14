@@ -5,6 +5,8 @@ export const config = { runtime: 'edge' };
 
 import { getCachedJson, setCachedJson } from './_upstash-cache.js';
 import { recordCacheTelemetry } from './_cache-telemetry.js';
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonBody } from './_response.js';
 
 const CACHE_KEY = 'hapi:conflict-events:v2';
 const CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours
@@ -28,15 +30,28 @@ function toErrorMessage(error) {
 }
 
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonBody({ error: 'Method not allowed' }, {
+      status: 405,
+      corsHeaders,
+    });
+  }
+
   const now = Date.now();
   const cached = await getCachedJson(CACHE_KEY);
   if (isValidResult(cached)) {
     recordCacheTelemetry('/api/hapi', 'REDIS-HIT');
-    return Response.json(cached, {
+    return jsonBody(cached, {
       status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': RESPONSE_CACHE_CONTROL,
+      corsHeaders,
+      cacheControl: RESPONSE_CACHE_CONTROL,
+      extraHeaders: {
         'X-Cache': 'REDIS-HIT',
       },
     });
@@ -44,11 +59,11 @@ export default async function handler(req) {
 
   if (isValidResult(fallbackCache.data) && now - fallbackCache.timestamp < CACHE_TTL_MS) {
     recordCacheTelemetry('/api/hapi', 'MEMORY-HIT');
-    return Response.json(fallbackCache.data, {
+    return jsonBody(fallbackCache.data, {
       status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': RESPONSE_CACHE_CONTROL,
+      corsHeaders,
+      cacheControl: RESPONSE_CACHE_CONTROL,
+      extraHeaders: {
         'X-Cache': 'MEMORY-HIT',
       },
     });
@@ -113,31 +128,31 @@ export default async function handler(req) {
     void setCachedJson(CACHE_KEY, result, CACHE_TTL_SECONDS);
     recordCacheTelemetry('/api/hapi', 'MISS');
 
-    return Response.json(result, {
+    return jsonBody(result, {
       status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': RESPONSE_CACHE_CONTROL,
+      corsHeaders,
+      cacheControl: RESPONSE_CACHE_CONTROL,
+      extraHeaders: {
         'X-Cache': 'MISS',
       },
     });
   } catch (error) {
     if (isValidResult(fallbackCache.data)) {
       recordCacheTelemetry('/api/hapi', 'STALE');
-      return Response.json(fallbackCache.data, {
+      return jsonBody(fallbackCache.data, {
         status: 200,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=300',
+        corsHeaders,
+        cacheControl: 'public, max-age=300',
+        extraHeaders: {
           'X-Cache': 'STALE',
         },
       });
     }
 
     recordCacheTelemetry('/api/hapi', 'ERROR');
-    return Response.json({ error: `Fetch failed: ${toErrorMessage(error)}`, countries: [] }, {
+    return jsonBody({ error: `Fetch failed: ${toErrorMessage(error)}`, countries: [] }, {
       status: 500,
-      headers: { 'Access-Control-Allow-Origin': '*' },
+      corsHeaders,
     });
   }
 }

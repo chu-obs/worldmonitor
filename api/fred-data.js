@@ -1,4 +1,5 @@
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonError, jsonRaw } from './_response.js';
 export const config = { runtime: 'edge' };
 
 export default async function handler(req) {
@@ -6,22 +7,24 @@ export default async function handler(req) {
 
   if (req.method === 'OPTIONS') {
     if (isDisallowedOrigin(req)) {
-      return new Response(null, { status: 403, headers: corsHeaders });
+      return empty(403, corsHeaders);
     }
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return empty(204, corsHeaders);
   }
 
   if (req.method !== 'GET') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'method_not_allowed',
+      corsHeaders,
     });
   }
 
   if (isDisallowedOrigin(req)) {
-    return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+    return jsonError('Origin not allowed', {
       status: 403,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'origin_not_allowed',
+      corsHeaders,
     });
   }
 
@@ -31,17 +34,19 @@ export default async function handler(req) {
   const observationEnd = url.searchParams.get('observation_end');
 
   if (!seriesId) {
-    return new Response(JSON.stringify({ error: 'Missing series_id parameter' }), {
+    return jsonError('Missing series_id parameter', {
       status: 400,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'missing_series_id',
+      corsHeaders,
     });
   }
 
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'FRED_API_KEY not configured' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    return jsonError('FRED_API_KEY not configured', {
+      status: 503,
+      code: 'missing_api_key',
+      corsHeaders,
     });
   }
 
@@ -64,18 +69,17 @@ export default async function handler(req) {
 
     const data = await response.json();
 
-    return new Response(JSON.stringify(data), {
+    return jsonRaw(data, {
       status: response.status,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=3600',
-        ...corsHeaders,
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=3600',
     });
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    return jsonError('Failed to fetch data', {
       status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
     });
   }
 }

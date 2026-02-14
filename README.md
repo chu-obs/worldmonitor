@@ -159,6 +159,16 @@ Both variants run from a single codebase — switch between them with one click.
 
 Map overlay behavior is validated in Playwright using the map harness (`/map-harness.html`).
 
+- Service-level unit tests:
+  - `npm run test:unit`
+  - Covers:
+    - tech-events geocoding normalization and handler contract
+    - classify-event fallback behavior
+    - temporal-baseline client update/check flow
+    - data-freshness status transitions and critical-gap signaling
+    - runtime loading orchestration primitives (guarded-load, layer-load-dispatch, refresh-scheduler)
+    - lifecycle teardown cleanup flow (`destroyAppResourcesFlow`)
+    - shared popup-trigger utilities (`popup-triggers`) for both SVG and Deck map flows
 - Cluster-state cache initialization guard:
   - `updates protest marker click payload after data refresh`
   - `initializes cluster movement cache on first protest cluster render`
@@ -467,14 +477,16 @@ The AI summarization pipeline adds content-based deduplication: headlines are ha
 
 | Layer | Mechanism |
 |-------|-----------|
-| **CORS origin allowlist** | Only `worldmonitor.app`, `startups.worldmonitor.app`, and `localhost:*` can call API endpoints. All others receive 403. Implemented in `api/_cors.js`. |
+| **CORS policy tiers** | Default policy is strict origin allowlist in `api/_cors.js` (`*.worldmonitor.app`, approved Vercel preview domains, `localhost:*`). Disallowed origins receive `403` on protected endpoints. Explicit wildcard CORS is reserved for selected read-only public data endpoints (see `docs/API_CONTRACT_MATRIX.md`). |
 | **RSS domain allowlist** | The RSS proxy only fetches from explicitly listed domains (~90+). Requests for unlisted domains are rejected with 403. |
 | **Railway domain allowlist** | The Railway relay has a separate, smaller domain allowlist for feeds that need the alternate origin. |
 | **API key isolation** | All API keys live server-side in Vercel environment variables. The browser never sees Groq, OpenRouter, ACLED, Finnhub, or other credentials. |
 | **Input sanitization** | User-facing content passes through `escapeHtml()` (prevents XSS) and `sanitizeUrl()` (blocks `javascript:` and `data:` URIs). URLs use `escapeAttr()` for attribute context encoding. |
 | **Query parameter validation** | API endpoints validate input formats (e.g., stablecoin coin IDs must match `[a-z0-9-]+`, bounding box params are numeric). |
-| **IP rate limiting** | AI endpoints use Upstash Redis-backed rate limiting to prevent abuse of Groq/OpenRouter quotas. |
+| **IP rate limiting** | High-cost endpoints use in-memory IP throttling via `api/_ip-rate-limit.js` (e.g. `acled`, `acled-conflict`, `climate-anomalies`, `ucdp-events`, `unhcr-population`, `worldpop-exposure`, `country-intel`, `groq-summarize`, `openrouter-summarize`, `classify-event`, `risk-scores`). |
 | **No debug endpoints** | The `api/debug-env.js` endpoint returns 404 in production — it exists only as a disabled placeholder. |
+
+See `docs/API_CONTRACT_MATRIX.md` for per-endpoint CORS mode, cache policy, and rate-limit contract.
 
 ---
 

@@ -5,6 +5,9 @@
  */
 
 import { Redis } from '@upstash/redis';
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonBody } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -14,6 +17,13 @@ const CACHE_TTL_SECONDS = 600; // 10 minutes
 const STALE_CACHE_TTL_SECONDS = 3600; // 1 hour - serve stale when API fails
 const CACHE_KEY = 'risk:scores:v2';
 const STALE_CACHE_KEY = 'risk:scores:stale:v2';
+const RATE_LIMIT = 20; // requests / minute / IP
+const RATE_WINDOW_MS = 60 * 1000;
+const rateLimiter = createIpRateLimiter({
+  limit: RATE_LIMIT,
+  windowMs: RATE_WINDOW_MS,
+  maxEntries: 5000,
+});
 
 // Tier 1 countries for CII
 const TIER1_COUNTRIES = {
@@ -71,6 +81,12 @@ function getRedis() {
     redis = new Redis({ url, token });
   }
   return redis;
+}
+
+function getClientIp(req) {
+  return req.headers.get('x-forwarded-for')?.split(',')[0] ||
+    req.headers.get('x-real-ip') ||
+    'unknown';
 }
 
 function normalizeCountryName(text) {
@@ -232,11 +248,36 @@ function computeStrategicRisk(ciiScores) {
 }
 
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'GET, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
   // Allow GET only
   if (request.method !== 'GET') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonBody({ error: 'Method not allowed' }, {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
+    });
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return jsonBody({ error: 'Origin not allowed' }, {
+      status: 403,
+      corsHeaders,
+    });
+  }
+
+  const ip = getClientIp(request);
+  if (!rateLimiter.check(ip)) {
+    return jsonBody({ error: 'Rate limited' }, {
+      status: 429,
+      corsHeaders,
+      extraHeaders: { 'Retry-After': '60' },
     });
   }
 
@@ -255,15 +296,13 @@ export default async function handler(request) {
       const cached = await redisClient.get(CACHE_KEY);
       if (cached && typeof cached === 'object') {
         console.log('[RiskScores] Cache hit');
-        return new Response(JSON.stringify({
+        return jsonBody({
           ...cached,
           cached: true,
-        }), {
+        }, {
           status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'public, max-age=300',
-          },
+          corsHeaders,
+          cacheControl: 'public, max-age=300',
         });
       }
     } catch (cacheError) {
@@ -302,15 +341,13 @@ export default async function handler(request) {
       }
     }
 
-    return new Response(JSON.stringify({
+    return jsonBody({
       ...result,
       cached: false,
-    }), {
+    }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=300',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=300',
     });
 
   } catch (error) {
@@ -322,17 +359,15 @@ export default async function handler(request) {
         const stale = await redisClient.get(STALE_CACHE_KEY);
         if (stale && typeof stale === 'object') {
           console.log('[RiskScores] Returning stale cache due to error');
-          return new Response(JSON.stringify({
+          return jsonBody({
             ...stale,
             cached: true,
             stale: true,
             error: 'Using cached data - ACLED temporarily unavailable',
-          }), {
+          }, {
             status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              'Cache-Control': 'public, max-age=60',
-            },
+            corsHeaders,
+            cacheControl: 'public, max-age=60',
           });
         }
       } catch (cacheError) {
@@ -345,19 +380,17 @@ export default async function handler(request) {
     const baselineScores = computeCIIScores([]);  // Empty protests = baseline only
     const baselineStrategic = computeStrategicRisk(baselineScores);
 
-    return new Response(JSON.stringify({
+    return jsonBody({
       cii: baselineScores,
       strategicRisk: baselineStrategic,
       protestCount: 0,
       computedAt: new Date().toISOString(),
       baseline: true,
       error: 'ACLED unavailable - showing baseline risk assessments',
-    }), {
+    }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=60',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=60',
     });
   }
 }

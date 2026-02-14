@@ -4,6 +4,7 @@ import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
 import { getCachedJson, setCachedJson } from './_upstash-cache.js';
 import { recordCacheTelemetry } from './_cache-telemetry.js';
 import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonBody } from './_response.js';
 
 export const config = { runtime: 'edge' };
 
@@ -38,31 +39,31 @@ export default async function handler(req) {
 
   if (req.method === 'OPTIONS') {
     if (isDisallowedOrigin(req)) {
-      return new Response(null, { status: 403, headers: corsHeaders });
+      return empty(403, corsHeaders);
     }
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return empty(204, corsHeaders);
   }
 
   if (req.method !== 'GET') {
-    return Response.json({ error: 'Method not allowed', data: [] }, {
+    return jsonBody({ error: 'Method not allowed', data: [] }, {
       status: 405,
-      headers: corsHeaders,
+      corsHeaders,
     });
   }
 
   if (isDisallowedOrigin(req)) {
-    return Response.json({ error: 'Origin not allowed', data: [] }, {
+    return jsonBody({ error: 'Origin not allowed', data: [] }, {
       status: 403,
-      headers: corsHeaders,
+      corsHeaders,
     });
   }
 
   const ip = getClientIp(req);
   if (!rateLimiter.check(ip)) {
-    return Response.json({ error: 'Rate limited', data: [] }, {
+    return jsonBody({ error: 'Rate limited', data: [] }, {
       status: 429,
-      headers: {
-        ...corsHeaders,
+      corsHeaders,
+      extraHeaders: {
         'Retry-After': '60',
       },
     });
@@ -70,13 +71,13 @@ export default async function handler(req) {
 
   const token = process.env.ACLED_ACCESS_TOKEN;
   if (!token) {
-    return Response.json({
+    return jsonBody({
       error: 'ACLED not configured',
       data: [],
       configured: false,
     }, {
       status: 200,
-      headers: corsHeaders,
+      corsHeaders,
     });
   }
 
@@ -84,11 +85,11 @@ export default async function handler(req) {
   const cached = await getCachedJson(CACHE_KEY);
   if (cached && typeof cached === 'object' && Array.isArray(cached.data)) {
     recordCacheTelemetry('/api/acled', 'REDIS-HIT');
-    return Response.json(cached, {
+    return jsonBody(cached, {
       status: 200,
-      headers: {
-        ...corsHeaders,
-        'Cache-Control': 'public, max-age=300',
+      corsHeaders,
+      cacheControl: 'public, max-age=300',
+      extraHeaders: {
         'X-Cache': 'REDIS-HIT',
       },
     });
@@ -96,11 +97,11 @@ export default async function handler(req) {
 
   if (fallbackCache.data && now - fallbackCache.timestamp < CACHE_TTL_MS) {
     recordCacheTelemetry('/api/acled', 'MEMORY-HIT');
-    return Response.json(fallbackCache.data, {
+    return jsonBody(fallbackCache.data, {
       status: 200,
-      headers: {
-        ...corsHeaders,
-        'Cache-Control': 'public, max-age=300',
+      corsHeaders,
+      cacheControl: 'public, max-age=300',
+      extraHeaders: {
         'X-Cache': 'MEMORY-HIT',
       },
     });
@@ -126,13 +127,13 @@ export default async function handler(req) {
 
     if (!response.ok) {
       const text = await response.text();
-      return Response.json({
+      return jsonBody({
         error: `ACLED API error: ${response.status}`,
         details: text.substring(0, 200),
         data: [],
       }, {
         status: response.status,
-        headers: corsHeaders,
+        corsHeaders,
       });
     }
 
@@ -167,34 +168,34 @@ export default async function handler(req) {
     void setCachedJson(CACHE_KEY, result, CACHE_TTL_SECONDS);
     recordCacheTelemetry('/api/acled', 'MISS');
 
-    return Response.json(result, {
+    return jsonBody(result, {
       status: 200,
-      headers: {
-        ...corsHeaders,
-        'Cache-Control': 'public, max-age=300',
+      corsHeaders,
+      cacheControl: 'public, max-age=300',
+      extraHeaders: {
         'X-Cache': 'MISS',
       },
     });
   } catch (error) {
     if (fallbackCache.data) {
       recordCacheTelemetry('/api/acled', 'STALE');
-      return Response.json(fallbackCache.data, {
+      return jsonBody(fallbackCache.data, {
         status: 200,
-        headers: {
-          ...corsHeaders,
-          'Cache-Control': 'public, max-age=60',
+        corsHeaders,
+        cacheControl: 'public, max-age=60',
+        extraHeaders: {
           'X-Cache': 'STALE',
         },
       });
     }
 
     recordCacheTelemetry('/api/acled', 'ERROR');
-    return Response.json({
+    return jsonBody({
       error: `Fetch failed: ${toErrorMessage(error)}`,
       data: [],
     }, {
       status: 500,
-      headers: corsHeaders,
+      corsHeaders,
     });
   }
 }

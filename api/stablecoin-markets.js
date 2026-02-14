@@ -1,6 +1,7 @@
 export const config = { runtime: 'edge' };
 
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 const CACHE_TTL = 120;
 let cachedResponse = null;
@@ -27,18 +28,30 @@ export default async function handler(req) {
   const cors = getCorsHeaders(req);
   if (req.method === 'OPTIONS') {
     if (isDisallowedOrigin(req)) {
-      return new Response(null, { status: 403, headers: cors });
+      return empty(403, cors);
     }
-    return new Response(null, { status: 204, headers: cors });
+    return empty(204, cors);
+  }
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders: cors,
+    });
   }
   if (isDisallowedOrigin(req)) {
-    return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403, headers: { ...cors, 'Content-Type': 'application/json' } });
+    return jsonError('Origin not allowed', {
+      status: 403,
+      code: 'origin_not_allowed',
+      corsHeaders: cors,
+    });
   }
 
   const now = Date.now();
   if (cachedResponse && now - cacheTimestamp < CACHE_TTL * 1000) {
-    return new Response(JSON.stringify(cachedResponse), {
-      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=300` },
+    return jsonOk(cachedResponse, {
+      corsHeaders: cors,
+      cacheControl: `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=300`,
     });
   }
 
@@ -59,13 +72,15 @@ export default async function handler(req) {
 
     if (res.status === 429) {
       if (cachedResponse) {
-        return new Response(JSON.stringify(cachedResponse), {
-          headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, s-maxage=60' },
+        return jsonOk(cachedResponse, {
+          corsHeaders: cors,
+          cacheControl: 'public, s-maxage=60',
         });
       }
-      return new Response(JSON.stringify({ error: 'Rate limited', timestamp: new Date().toISOString() }), {
+      return jsonError('Rate limited', {
         status: 429,
-        headers: { ...cors, 'Content-Type': 'application/json' },
+        code: 'upstream_rate_limited',
+        corsHeaders: cors,
       });
     }
 
@@ -115,16 +130,18 @@ export default async function handler(req) {
     cachedResponse = result;
     cacheTimestamp = now;
 
-    return new Response(JSON.stringify(result), {
-      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=300` },
+    return jsonOk(result, {
+      corsHeaders: cors,
+      cacheControl: `public, s-maxage=${CACHE_TTL}, stale-while-revalidate=300`,
     });
   } catch (err) {
+    console.warn('[Stablecoin Markets] Fetch failed, serving fallback:', err);
     const fallback = cachedResponse || buildFallbackResult();
     cachedResponse = fallback;
     cacheTimestamp = now;
-    return new Response(JSON.stringify(fallback), {
-      status: 200,
-      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, s-maxage=60' },
+    return jsonOk(fallback, {
+      corsHeaders: cors,
+      cacheControl: 'public, s-maxage=60',
     });
   }
 }

@@ -4,6 +4,8 @@
  * Twitter/Facebook/LinkedIn crawlers hit this, real users get redirected to the SPA.
  */
 
+import { nodeError, nodeSend } from './_response-node.js';
+
 const COUNTRY_NAMES = {
   UA: 'Ukraine', RU: 'Russia', CN: 'China', US: 'United States',
   IR: 'Iran', IL: 'Israel', TW: 'Taiwan', KP: 'North Korea',
@@ -15,7 +17,18 @@ const COUNTRY_NAMES = {
 const BOT_UA = /twitterbot|facebookexternalhit|linkedinbot|slackbot|telegrambot|whatsapp|discordbot|redditbot|googlebot/i;
 
 export default function handler(req, res) {
-  const url = new URL(req.url, `https://${req.headers.host}`);
+  if (req.method !== 'GET') {
+    return nodeError(res, 'Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      headers: {
+        Allow: 'GET',
+      },
+    });
+  }
+
+  const baseUrl = getBaseUrl(req);
+  const url = new URL(req.url, baseUrl);
   const countryCode = (url.searchParams.get('c') || '').toUpperCase();
   const type = url.searchParams.get('t') || 'ciianalysis';
   const ts = url.searchParams.get('ts') || '';
@@ -25,14 +38,17 @@ export default function handler(req, res) {
   const ua = req.headers['user-agent'] || '';
   const isBot = BOT_UA.test(ua);
 
-  const baseUrl = `https://${req.headers.host}`;
   const spaUrl = `${baseUrl}/?c=${countryCode}&t=${type}${ts ? `&ts=${ts}` : ''}`;
 
   // Real users → redirect to SPA
   if (!isBot) {
-    res.writeHead(302, { Location: spaUrl });
-    res.end();
-    return;
+    return nodeSend(res, '', {
+      status: 302,
+      headers: {
+        Location: spaUrl,
+        'Cache-Control': 'private, no-store',
+      },
+    });
   }
 
   // Bots → serve meta tags
@@ -74,11 +90,21 @@ export default function handler(req, res) {
 </body>
 </html>`;
 
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
-  res.status(200).send(html);
+  return nodeSend(res, html, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=300, s-maxage=300',
+    },
+  });
 }
 
 function esc(str) {
   return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function getBaseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'worldmonitor.app';
+  return `${proto}://${host}`;
 }

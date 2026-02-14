@@ -1,8 +1,24 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 // Fetch trending GitHub repositories
 // Uses unofficial GitHub trending scraper API
 export default async function handler(request) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (request.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const language = searchParams.get('language') || 'python'; // python, javascript, typescript, etc.
@@ -46,39 +62,26 @@ export default async function handler(request) {
       }
 
       const data = await fallbackResponse.json();
-      return new Response(JSON.stringify(data), {
+      return jsonOk(data, {
         status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=1800', // 30 min cache
-        },
+        corsHeaders,
+        cacheControl: 'public, max-age=1800', // 30 min cache
       });
     }
 
     const data = await response.json();
 
-    return new Response(JSON.stringify(data), {
+    return jsonOk(data, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=1800', // 30 min cache
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=1800', // 30 min cache
     });
   } catch (error) {
-    return new Response(
-      JSON.stringify({
-        error: 'Failed to fetch GitHub trending data',
-        message: error.message
-      }),
-      {
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
-      }
-    );
+    return jsonError('Failed to fetch GitHub trending data', {
+      status: 500,
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
+    });
   }
 }

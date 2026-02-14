@@ -2,6 +2,7 @@ import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
 import { getCachedJson, setCachedJson } from './_upstash-cache.js';
 import { recordCacheTelemetry } from './_cache-telemetry.js';
 import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonBody } from './_response.js';
 
 export const config = { runtime: 'edge' };
 
@@ -60,17 +61,21 @@ async function handleCountries(corsHeaders, now) {
   const cached = await getCachedJson(COUNTRIES_CACHE_KEY);
   if (isValidCountries(cached)) {
     recordCacheTelemetry('/api/worldpop-exposure?countries', 'REDIS-HIT');
-    return Response.json(cached, {
+    return jsonBody(cached, {
       status: 200,
-      headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=86400', 'X-Cache': 'REDIS-HIT' },
+      corsHeaders,
+      cacheControl: 'public, max-age=86400',
+      extraHeaders: { 'X-Cache': 'REDIS-HIT' },
     });
   }
 
   if (isValidCountries(countriesFallback.data) && now - countriesFallback.timestamp < COUNTRIES_TTL_MS) {
     recordCacheTelemetry('/api/worldpop-exposure?countries', 'MEMORY-HIT');
-    return Response.json(countriesFallback.data, {
+    return jsonBody(countriesFallback.data, {
       status: 200,
-      headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=86400', 'X-Cache': 'MEMORY-HIT' },
+      corsHeaders,
+      cacheControl: 'public, max-age=86400',
+      extraHeaders: { 'X-Cache': 'MEMORY-HIT' },
     });
   }
 
@@ -86,9 +91,11 @@ async function handleCountries(corsHeaders, now) {
   void setCachedJson(COUNTRIES_CACHE_KEY, result, COUNTRIES_TTL_SECONDS);
   recordCacheTelemetry('/api/worldpop-exposure?countries', 'MISS');
 
-  return Response.json(result, {
+  return jsonBody(result, {
     status: 200,
-    headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=86400', 'X-Cache': 'MISS' },
+    corsHeaders,
+    cacheControl: 'public, max-age=86400',
+    extraHeaders: { 'X-Cache': 'MISS' },
   });
 }
 
@@ -117,7 +124,7 @@ function handleExposure(corsHeaders, lat, lon, radius) {
   const areaKm2 = Math.PI * radius * radius;
   const exposed = Math.round(density * areaKm2);
 
-  return Response.json({
+  return jsonBody({
     success: true,
     exposedPopulation: exposed,
     exposureRadiusKm: radius,
@@ -125,7 +132,8 @@ function handleExposure(corsHeaders, lat, lon, radius) {
     densityPerKm2: Math.round(density),
   }, {
     status: 200,
-    headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=3600' },
+    corsHeaders,
+    cacheControl: 'public, max-age=3600',
   });
 }
 
@@ -133,22 +141,24 @@ export default async function handler(req) {
   const corsHeaders = getCorsHeaders(req, 'GET, OPTIONS');
 
   if (req.method === 'OPTIONS') {
-    if (isDisallowedOrigin(req)) return new Response(null, { status: 403, headers: corsHeaders });
-    return new Response(null, { status: 204, headers: corsHeaders });
+    if (isDisallowedOrigin(req)) return empty(403, corsHeaders);
+    return empty(204, corsHeaders);
   }
 
   if (req.method !== 'GET') {
-    return Response.json({ error: 'Method not allowed' }, { status: 405, headers: corsHeaders });
+    return jsonBody({ error: 'Method not allowed' }, { status: 405, corsHeaders });
   }
 
   if (isDisallowedOrigin(req)) {
-    return Response.json({ error: 'Origin not allowed' }, { status: 403, headers: corsHeaders });
+    return jsonBody({ error: 'Origin not allowed' }, { status: 403, corsHeaders });
   }
 
   const ip = getClientIp(req);
   if (!rateLimiter.check(ip)) {
-    return Response.json({ error: 'Rate limited' }, {
-      status: 429, headers: { ...corsHeaders, 'Retry-After': '60' },
+    return jsonBody({ error: 'Rate limited' }, {
+      status: 429,
+      corsHeaders,
+      extraHeaders: { 'Retry-After': '60' },
     });
   }
 
@@ -161,7 +171,7 @@ export default async function handler(req) {
     const radius = Number(url.searchParams.get('radius')) || 50;
 
     if (isNaN(lat) || isNaN(lon)) {
-      return Response.json({ error: 'lat and lon required' }, { status: 400, headers: corsHeaders });
+      return jsonBody({ error: 'lat and lon required' }, { status: 400, corsHeaders });
     }
 
     return handleExposure(corsHeaders, lat, lon, radius);

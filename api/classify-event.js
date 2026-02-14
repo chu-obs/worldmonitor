@@ -1,4 +1,7 @@
 import { Redis } from '@upstash/redis';
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonBody } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -8,6 +11,13 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = 'llama-3.1-8b-instant';
 const CACHE_TTL_SECONDS = 86400;
 const CACHE_VERSION = 'v1';
+const RATE_LIMIT = 60; // requests/min/IP
+const RATE_WINDOW_MS = 60 * 1000;
+const rateLimiter = createIpRateLimiter({
+  limit: RATE_LIMIT,
+  windowMs: RATE_WINDOW_MS,
+  maxEntries: 5000,
+});
 
 let redis = null;
 let redisInitFailed = false;
@@ -44,19 +54,50 @@ const VALID_CATEGORIES = [
   'crime', 'infrastructure', 'tech', 'general',
 ];
 
+function getClientIp(req) {
+  return req.headers.get('x-forwarded-for')?.split(',')[0] ||
+    req.headers.get('x-real-ip') ||
+    'unknown';
+}
+
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'GET, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
   if (request.method !== 'GET') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonBody({ error: 'Method not allowed' }, {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
+    });
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return jsonBody({ error: 'Origin not allowed' }, {
+      status: 403,
+      corsHeaders,
+    });
+  }
+
+  const ip = getClientIp(request);
+  if (!rateLimiter.check(ip)) {
+    return jsonBody({ error: 'Rate limited', fallback: true }, {
+      status: 429,
+      corsHeaders,
+      extraHeaders: { 'Retry-After': '60' },
     });
   }
 
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ fallback: true }), {
+    return jsonBody({ fallback: true }, {
       status: 503,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 
@@ -65,9 +106,9 @@ export default async function handler(request) {
   const variant = url.searchParams.get('variant') || 'full';
 
   if (!title) {
-    return new Response(JSON.stringify({ error: 'title param required' }), {
+    return jsonBody({ error: 'title param required' }, {
       status: 400,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 
@@ -79,15 +120,15 @@ export default async function handler(request) {
       try {
         const cached = await redisClient.get(cacheKey);
         if (cached && typeof cached === 'object' && cached.level) {
-          return new Response(JSON.stringify({
+          return jsonBody({
             level: cached.level,
             category: cached.category,
             confidence: 0.9,
             source: 'llm',
             cached: true,
-          }), {
+          }, {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            corsHeaders,
           });
         }
       } catch (e) {
@@ -124,18 +165,18 @@ Return: {"level":"...","category":"..."}`;
 
     if (!response.ok) {
       console.error('[Classify] Groq error:', response.status);
-      return new Response(JSON.stringify({ fallback: true }), {
+      return jsonBody({ fallback: true }, {
         status: response.status,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
     const data = await response.json();
     const raw = data.choices?.[0]?.message?.content?.trim();
     if (!raw) {
-      return new Response(JSON.stringify({ fallback: true }), {
+      return jsonBody({ fallback: true }, {
         status: 500,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
@@ -144,18 +185,18 @@ Return: {"level":"...","category":"..."}`;
       parsed = JSON.parse(raw);
     } catch {
       console.warn('[Classify] Invalid JSON from LLM:', raw);
-      return new Response(JSON.stringify({ fallback: true }), {
+      return jsonBody({ fallback: true }, {
         status: 500,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
     const level = VALID_LEVELS.includes(parsed.level) ? parsed.level : null;
     const category = VALID_CATEGORIES.includes(parsed.category) ? parsed.category : null;
     if (!level || !category) {
-      return new Response(JSON.stringify({ fallback: true }), {
+      return jsonBody({ fallback: true }, {
         status: 500,
-        headers: { 'Content-Type': 'application/json' },
+        corsHeaders,
       });
     }
 
@@ -167,25 +208,27 @@ Return: {"level":"...","category":"..."}`;
       }
     }
 
-    return new Response(JSON.stringify({
+    return jsonBody({
       level,
       category,
       confidence: 0.9,
       source: 'llm',
       cached: false,
-    }), {
+    }, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=3600',
-      },
+      corsHeaders,
+      cacheControl: 'public, max-age=3600',
     });
 
   } catch (error) {
-    console.error('[Classify] Error:', error.message);
-    return new Response(JSON.stringify({ fallback: true }), {
+    if (error instanceof Error) {
+      console.error('[Classify] Error:', error.message);
+    } else {
+      console.error('[Classify] Error:', String(error));
+    }
+    return jsonBody({ fallback: true }, {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   }
 }

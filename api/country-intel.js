@@ -5,6 +5,9 @@
  */
 
 import { Redis } from '@upstash/redis';
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 export const config = {
   runtime: 'edge',
@@ -14,6 +17,14 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = 'llama-3.1-8b-instant';
 const CACHE_TTL_SECONDS = 7200; // 2 hours
 const CACHE_VERSION = 'ci-v2';
+const RATE_LIMIT = 12; // requests
+const RATE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const RATE_RETRY_AFTER_SECONDS = Math.ceil(RATE_WINDOW_MS / 1000);
+const rateLimiter = createIpRateLimiter({
+  limit: RATE_LIMIT,
+  windowMs: RATE_WINDOW_MS,
+  maxEntries: 5000,
+});
 
 let redis = null;
 let redisInitFailed = false;
@@ -42,19 +53,57 @@ function hashString(str) {
   return Math.abs(hash).toString(36);
 }
 
+function getClientIp(req) {
+  return req.headers.get('x-forwarded-for')?.split(',')[0] ||
+    req.headers.get('x-real-ip') ||
+    'unknown';
+}
+
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'POST, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return jsonError('Origin not allowed', {
+      status: 403,
+      code: 'origin_not_allowed',
+      corsHeaders,
+    });
+  }
+
+  const ip = getClientIp(request);
+  if (!rateLimiter.check(ip)) {
+    return jsonError('Rate limited', {
+      status: 429,
+      code: 'rate_limited',
+      corsHeaders,
+      extraHeaders: {
+        'Retry-After': String(RATE_RETRY_AFTER_SECONDS),
+      },
     });
   }
 
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'Groq API key not configured', fallback: true }), {
+    return jsonError('Groq API key not configured', {
       status: 503,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'missing_api_key',
+      details: { fallback: true },
+      corsHeaders,
     });
   }
 
@@ -62,9 +111,10 @@ export default async function handler(request) {
     const { country, code, context } = await request.json();
 
     if (!country || !code) {
-      return new Response(JSON.stringify({ error: 'country and code required' }), {
+      return jsonError('country and code required', {
         status: 400,
-        headers: { 'Content-Type': 'application/json' },
+        code: 'missing_country_or_code',
+        corsHeaders,
       });
     }
 
@@ -78,9 +128,9 @@ export default async function handler(request) {
         const cached = await redisClient.get(cacheKey);
         if (cached && typeof cached === 'object' && cached.brief) {
           console.log('[CountryIntel] Cache hit:', code);
-          return new Response(JSON.stringify({ ...cached, cached: true }), {
+          return jsonOk({ ...cached, cached: true }, {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            corsHeaders,
           });
         }
       } catch (e) {
@@ -167,9 +217,11 @@ Rules:
     if (!groqRes.ok) {
       const errText = await groqRes.text();
       console.error('[CountryIntel] Groq error:', groqRes.status, errText);
-      return new Response(JSON.stringify({ error: 'AI service error', fallback: true }), {
+      return jsonError('AI service error', {
         status: 502,
-        headers: { 'Content-Type': 'application/json' },
+        code: 'upstream_ai_error',
+        details: { fallback: true },
+        corsHeaders,
       });
     }
 
@@ -194,15 +246,17 @@ Rules:
       }
     }
 
-    return new Response(JSON.stringify(result), {
+    return jsonOk(result, {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      corsHeaders,
     });
   } catch (err) {
     console.error('[CountryIntel] Error:', err);
-    return new Response(JSON.stringify({ error: 'Internal error' }), {
+    return jsonError('Internal error', {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      code: 'internal_error',
+      details: err instanceof Error ? err.message : String(err),
+      corsHeaders,
     });
   }
 }

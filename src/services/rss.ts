@@ -2,6 +2,7 @@ import type { Feed, NewsItem } from '@/types';
 import { SITE_VARIANT } from '@/config';
 import { chunkArray, fetchWithProxy } from '@/utils';
 import { classifyByKeyword, classifyWithAI } from './threat-classifier';
+import { dataFreshness } from './data-freshness';
 import { inferGeoHubsFromTitle } from './geo-hub-index';
 import { getPersistentCache, setPersistentCache } from './persistent-cache';
 
@@ -204,9 +205,7 @@ export async function fetchCategoryFeeds(
   }
 
   if (totalItems > 0) {
-    import('./data-freshness').then(({ dataFreshness }) => {
-      dataFreshness.recordUpdate('rss', totalItems);
-    });
+    dataFreshness.recordUpdate('rss', totalItems);
   }
 
   return ensureSortedDescending();

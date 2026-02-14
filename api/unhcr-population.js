@@ -2,6 +2,7 @@ import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
 import { getCachedJson, setCachedJson } from './_upstash-cache.js';
 import { recordCacheTelemetry } from './_cache-telemetry.js';
 import { createIpRateLimiter } from './_ip-rate-limit.js';
+import { empty, jsonBody } from './_response.js';
 
 export const config = { runtime: 'edge' };
 
@@ -79,22 +80,24 @@ export default async function handler(req) {
   const corsHeaders = getCorsHeaders(req, 'GET, OPTIONS');
 
   if (req.method === 'OPTIONS') {
-    if (isDisallowedOrigin(req)) return new Response(null, { status: 403, headers: corsHeaders });
-    return new Response(null, { status: 204, headers: corsHeaders });
+    if (isDisallowedOrigin(req)) return empty(403, corsHeaders);
+    return empty(204, corsHeaders);
   }
 
   if (req.method !== 'GET') {
-    return Response.json({ error: 'Method not allowed' }, { status: 405, headers: corsHeaders });
+    return jsonBody({ error: 'Method not allowed' }, { status: 405, corsHeaders });
   }
 
   if (isDisallowedOrigin(req)) {
-    return Response.json({ error: 'Origin not allowed' }, { status: 403, headers: corsHeaders });
+    return jsonBody({ error: 'Origin not allowed' }, { status: 403, corsHeaders });
   }
 
   const ip = getClientIp(req);
   if (!rateLimiter.check(ip)) {
-    return Response.json({ error: 'Rate limited' }, {
-      status: 429, headers: { ...corsHeaders, 'Retry-After': '60' },
+    return jsonBody({ error: 'Rate limited' }, {
+      status: 429,
+      corsHeaders,
+      extraHeaders: { 'Retry-After': '60' },
     });
   }
 
@@ -102,17 +105,21 @@ export default async function handler(req) {
   const cached = await getCachedJson(CACHE_KEY);
   if (isValidResult(cached)) {
     recordCacheTelemetry('/api/unhcr-population', 'REDIS-HIT');
-    return Response.json(cached, {
+    return jsonBody(cached, {
       status: 200,
-      headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=3600', 'X-Cache': 'REDIS-HIT' },
+      corsHeaders,
+      cacheControl: 'public, max-age=3600',
+      extraHeaders: { 'X-Cache': 'REDIS-HIT' },
     });
   }
 
   if (isValidResult(fallbackCache.data) && now - fallbackCache.timestamp < CACHE_TTL_MS) {
     recordCacheTelemetry('/api/unhcr-population', 'MEMORY-HIT');
-    return Response.json(fallbackCache.data, {
+    return jsonBody(fallbackCache.data, {
       status: 200,
-      headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=3600', 'X-Cache': 'MEMORY-HIT' },
+      corsHeaders,
+      cacheControl: 'public, max-age=3600',
+      extraHeaders: { 'X-Cache': 'MEMORY-HIT' },
     });
   }
 
@@ -249,22 +256,27 @@ export default async function handler(req) {
     void setCachedJson(CACHE_KEY, result, CACHE_TTL_SECONDS);
     recordCacheTelemetry('/api/unhcr-population', 'MISS');
 
-    return Response.json(result, {
+    return jsonBody(result, {
       status: 200,
-      headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=3600', 'X-Cache': 'MISS' },
+      corsHeaders,
+      cacheControl: 'public, max-age=3600',
+      extraHeaders: { 'X-Cache': 'MISS' },
     });
   } catch (error) {
     if (isValidResult(fallbackCache.data)) {
       recordCacheTelemetry('/api/unhcr-population', 'STALE');
-      return Response.json(fallbackCache.data, {
+      return jsonBody(fallbackCache.data, {
         status: 200,
-        headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=600', 'X-Cache': 'STALE' },
+        corsHeaders,
+        cacheControl: 'public, max-age=600',
+        extraHeaders: { 'X-Cache': 'STALE' },
       });
     }
 
     recordCacheTelemetry('/api/unhcr-population', 'ERROR');
-    return Response.json({ error: `Fetch failed: ${toErrorMessage(error)}`, countries: [], topFlows: [] }, {
-      status: 500, headers: corsHeaders,
+    return jsonBody({ error: `Fetch failed: ${toErrorMessage(error)}`, countries: [], topFlows: [] }, {
+      status: 500,
+      corsHeaders,
     });
   }
 }

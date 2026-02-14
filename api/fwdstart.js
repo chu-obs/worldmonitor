@@ -1,7 +1,23 @@
 export const config = { runtime: 'edge' };
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonError } from './_response.js';
 
 // Scrape FwdStart newsletter archive and return as RSS
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonError('Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      corsHeaders,
+    });
+  }
+
   try {
     const response = await fetch('https://www.fwdstart.me/archive', {
       headers: {
@@ -84,21 +100,17 @@ export default async function handler(req) {
     return new Response(rss, {
       headers: {
         'Content-Type': 'application/xml; charset=utf-8',
-        'Access-Control-Allow-Origin': '*',
+        ...corsHeaders,
         'Cache-Control': 'public, max-age=1800',
       },
     });
   } catch (error) {
     console.error('FwdStart scraper error:', error);
-    return new Response(JSON.stringify({
-      error: 'Failed to fetch FwdStart archive',
-      details: error.message
-    }), {
+    return jsonError('Failed to fetch FwdStart archive', {
       status: 502,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+      code: 'fetch_failed',
+      details: error instanceof Error ? error.message : String(error),
+      corsHeaders,
     });
   }
 }

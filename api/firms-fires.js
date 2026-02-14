@@ -10,6 +10,8 @@
 export const config = {
   runtime: 'edge',
 };
+import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { empty, jsonBody } from './_response.js';
 
 const FIRMS_API_KEY = process.env.NASA_FIRMS_API_KEY || process.env.FIRMS_API_KEY || '';
 const FIRMS_BASE = 'https://firms.modaps.eosdis.nasa.gov/api/area/csv';
@@ -70,8 +72,25 @@ function parseCSV(csv) {
 }
 
 export default async function handler(request) {
+  const corsHeaders = getCorsHeaders(request, 'GET, OPTIONS');
+
+  if (request.method === 'OPTIONS') {
+    if (isDisallowedOrigin(request)) {
+      return empty(403, corsHeaders);
+    }
+    return empty(204, corsHeaders);
+  }
+
+  if (request.method !== 'GET') {
+    return json({ error: 'Method not allowed' }, 405, corsHeaders);
+  }
+
+  if (isDisallowedOrigin(request)) {
+    return json({ error: 'Origin not allowed' }, 403, corsHeaders);
+  }
+
   if (!FIRMS_API_KEY) {
-    return json({ error: 'FIRMS_API_KEY not configured' }, 503);
+    return json({ error: 'FIRMS_API_KEY not configured' }, 503, corsHeaders);
   }
 
   try {
@@ -120,19 +139,17 @@ export default async function handler(request) {
       source: SOURCE,
       days,
       timestamp: new Date().toISOString(),
-    });
+    }, 200, corsHeaders);
   } catch (err) {
     console.error('[FIRMS] Error:', err);
-    return json({ error: 'Failed to fetch fire data' }, 500);
+    return json({ error: 'Failed to fetch fire data' }, 500, corsHeaders);
   }
 }
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
+function json(data, status = 200, corsHeaders = {}) {
+  return jsonBody(data, {
     status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'public, max-age=600', // 10 min cache
-    },
+    corsHeaders,
+    cacheControl: 'public, max-age=600', // 10 min cache
   });
 }

@@ -54,7 +54,7 @@ const SITE_VARIANT = import.meta.env.VITE_VARIANT || 'full';
 const FULL_LIVE_CHANNELS: LiveChannel[] = [
   { id: 'bloomberg', name: 'Bloomberg', handle: '@Bloomberg', fallbackVideoId: 'iEpJwprxDdk' },
   { id: 'sky', name: 'SkyNews', handle: '@SkyNews', fallbackVideoId: 'YDvsBbKfLPA' },
-  { id: 'euronews', name: 'Euronews', handle: '@euabortnews', fallbackVideoId: 'pykpO5kQJ98' },
+  { id: 'euronews', name: 'Euronews', handle: '@euronews', fallbackVideoId: 'pykpO5kQJ98' },
   { id: 'dw', name: 'DW', handle: '@DWNews', fallbackVideoId: 'LuKwFajn37U' },
   { id: 'cnbc', name: 'CNBC', handle: '@CNBC', fallbackVideoId: '9NyxcX3rhQs' },
   { id: 'france24', name: 'France24', handle: '@FRANCE24English', fallbackVideoId: 'Ap-UM1O9RBU' },

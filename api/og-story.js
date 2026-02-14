@@ -3,6 +3,8 @@
  * Returns an SVG image (1200x630) — rich intelligence card for social previews.
  */
 
+import { nodeError, nodeSend } from './_response-node.js';
+
 const COUNTRY_NAMES = {
   UA: 'Ukraine', RU: 'Russia', CN: 'China', US: 'United States',
   IR: 'Iran', IL: 'Israel', TW: 'Taiwan', KP: 'North Korea',
@@ -25,7 +27,17 @@ const LEVEL_LABELS = {
 };
 
 export default function handler(req, res) {
-  const url = new URL(req.url, `https://${req.headers.host}`);
+  if (req.method !== 'GET') {
+    return nodeError(res, 'Method not allowed', {
+      status: 405,
+      code: 'method_not_allowed',
+      headers: {
+        Allow: 'GET',
+      },
+    });
+  }
+
+  const url = new URL(req.url, getBaseUrl(req));
   const countryCode = (url.searchParams.get('c') || '').toUpperCase();
   const type = url.searchParams.get('t') || 'ciianalysis';
   const score = url.searchParams.get('s');
@@ -214,11 +226,21 @@ export default function handler(req, res) {
     >worldmonitor.app · ${dateStr} · Free &amp; open source</text>
 </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600');
-  res.status(200).send(svg);
+  return nodeSend(res, svg, {
+    status: 200,
+    headers: {
+      'Content-Type': 'image/svg+xml',
+      'Cache-Control': 'public, max-age=3600, s-maxage=3600',
+    },
+  });
 }
 
 function escapeXml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function getBaseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'worldmonitor.app';
+  return `${proto}://${host}`;
 }

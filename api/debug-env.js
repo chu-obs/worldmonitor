@@ -1,11 +1,9 @@
 export const config = { runtime: 'edge' };
+import { jsonBody } from './_response.js';
 
 export default async function handler() {
-  return new Response(JSON.stringify({ error: 'Not found' }), {
+  return jsonBody({ error: 'Not found' }, {
     status: 404,
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-store',
-    },
+    cacheControl: 'no-store',
   });
 }

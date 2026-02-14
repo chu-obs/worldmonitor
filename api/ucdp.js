@@ -5,6 +5,8 @@ export const config = { runtime: 'edge' };
 
 import { getCachedJson, setCachedJson } from './_upstash-cache.js';
 import { recordCacheTelemetry } from './_cache-telemetry.js';
+import { getWildcardCorsHeaders } from './_cors.js';
+import { empty, jsonBody } from './_response.js';
 
 const CACHE_KEY = 'ucdp:country-conflicts:v2';
 const CACHE_TTL_SECONDS = 24 * 60 * 60; // 24 hours (annual data)
@@ -28,15 +30,28 @@ function toErrorMessage(error) {
 }
 
 export default async function handler(req) {
+  const corsHeaders = getWildcardCorsHeaders('GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return empty(204, corsHeaders);
+  }
+
+  if (req.method !== 'GET') {
+    return jsonBody({ error: 'Method not allowed' }, {
+      status: 405,
+      corsHeaders,
+    });
+  }
+
   const now = Date.now();
   const cached = await getCachedJson(CACHE_KEY);
   if (isValidResult(cached)) {
     recordCacheTelemetry('/api/ucdp', 'REDIS-HIT');
-    return Response.json(cached, {
+    return jsonBody(cached, {
       status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': RESPONSE_CACHE_CONTROL,
+      corsHeaders,
+      cacheControl: RESPONSE_CACHE_CONTROL,
+      extraHeaders: {
         'X-Cache': 'REDIS-HIT',
       },
     });
@@ -44,11 +59,11 @@ export default async function handler(req) {
 
   if (isValidResult(fallbackCache.data) && now - fallbackCache.timestamp < CACHE_TTL_MS) {
     recordCacheTelemetry('/api/ucdp', 'MEMORY-HIT');
-    return Response.json(fallbackCache.data, {
+    return jsonBody(fallbackCache.data, {
       status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': RESPONSE_CACHE_CONTROL,
+      corsHeaders,
+      cacheControl: RESPONSE_CACHE_CONTROL,
+      extraHeaders: {
         'X-Cache': 'MEMORY-HIT',
       },
     });
@@ -115,31 +130,31 @@ export default async function handler(req) {
     void setCachedJson(CACHE_KEY, result, CACHE_TTL_SECONDS);
     recordCacheTelemetry('/api/ucdp', 'MISS');
 
-    return Response.json(result, {
+    return jsonBody(result, {
       status: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': RESPONSE_CACHE_CONTROL,
+      corsHeaders,
+      cacheControl: RESPONSE_CACHE_CONTROL,
+      extraHeaders: {
         'X-Cache': 'MISS',
       },
     });
   } catch (error) {
     if (isValidResult(fallbackCache.data)) {
       recordCacheTelemetry('/api/ucdp', 'STALE');
-      return Response.json(fallbackCache.data, {
+      return jsonBody(fallbackCache.data, {
         status: 200,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=600',
+        corsHeaders,
+        cacheControl: 'public, max-age=600',
+        extraHeaders: {
           'X-Cache': 'STALE',
         },
       });
     }
 
     recordCacheTelemetry('/api/ucdp', 'ERROR');
-    return Response.json({ error: `Fetch failed: ${toErrorMessage(error)}`, conflicts: [] }, {
+    return jsonBody({ error: `Fetch failed: ${toErrorMessage(error)}`, conflicts: [] }, {
       status: 500,
-      headers: { 'Access-Control-Allow-Origin': '*' },
+      corsHeaders,
     });
   }
 }

@@ -3,6 +3,7 @@ export const config = { runtime: 'edge' };
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
 import { getCachedJson, setCachedJson } from './_upstash-cache.js';
 import { recordCacheTelemetry } from './_cache-telemetry.js';
+import { empty, jsonError, jsonOk } from './_response.js';
 
 const CACHE_TTL_SECONDS = 8;
 const CACHE_TTL_MS = CACHE_TTL_SECONDS * 1000;
@@ -81,22 +82,24 @@ export default async function handler(req) {
 
   if (req.method === 'OPTIONS') {
     if (isDisallowedOrigin(req)) {
-      return new Response(null, { status: 403, headers: corsHeaders });
+      return empty(403, corsHeaders);
     }
-    return new Response(null, { status: 204, headers: corsHeaders });
+    return empty(204, corsHeaders);
   }
 
   if (req.method !== 'GET') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return jsonError('Method not allowed', {
       status: 405,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'method_not_allowed',
+      corsHeaders,
     });
   }
 
   if (isDisallowedOrigin(req)) {
-    return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+    return jsonError('Origin not allowed', {
       status: 403,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'origin_not_allowed',
+      corsHeaders,
     });
   }
 
@@ -107,13 +110,12 @@ export default async function handler(req) {
   if (isValidSnapshot(redisCached)) {
     setMemoryCachedSnapshot(cacheKey, redisCached);
     recordCacheTelemetry('/api/ais-snapshot', 'REDIS-HIT');
-    return new Response(JSON.stringify(redisCached), {
+    return jsonOk(redisCached, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}`,
+      cacheControl: `public, max-age=${CACHE_TTL_SECONDS}`,
+      corsHeaders,
+      extraHeaders: {
         'X-Cache': 'REDIS-HIT',
-        ...corsHeaders,
       },
     });
   }
@@ -121,13 +123,12 @@ export default async function handler(req) {
   const memoryCached = getMemoryCachedSnapshot(cacheKey);
   if (isValidSnapshot(memoryCached)) {
     recordCacheTelemetry('/api/ais-snapshot', 'MEMORY-HIT');
-    return new Response(JSON.stringify(memoryCached), {
+    return jsonOk(memoryCached, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}`,
+      cacheControl: `public, max-age=${CACHE_TTL_SECONDS}`,
+      corsHeaders,
+      extraHeaders: {
         'X-Cache': 'MEMORY-HIT',
-        ...corsHeaders,
       },
     });
   }
@@ -135,9 +136,10 @@ export default async function handler(req) {
   const relayBaseUrl = getRelayBaseUrl();
   if (!relayBaseUrl) {
     recordCacheTelemetry('/api/ais-snapshot', 'NO-RELAY-CONFIG');
-    return new Response(JSON.stringify({ error: 'AIS relay not configured' }), {
+    return jsonError('AIS relay not configured', {
       status: 503,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'relay_not_configured',
+      corsHeaders,
     });
   }
 
@@ -171,34 +173,34 @@ export default async function handler(req) {
     void setCachedJson(cacheKey, data, CACHE_TTL_SECONDS);
     recordCacheTelemetry('/api/ais-snapshot', 'MISS');
 
-    return new Response(JSON.stringify(data), {
+    return jsonOk(data, {
       status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}`,
+      cacheControl: `public, max-age=${CACHE_TTL_SECONDS}`,
+      corsHeaders,
+      extraHeaders: {
         'X-Cache': 'MISS',
-        ...corsHeaders,
       },
     });
   } catch (error) {
     const staleMemory = getMemoryCachedSnapshot(cacheKey, true);
     if (isValidSnapshot(staleMemory)) {
       recordCacheTelemetry('/api/ais-snapshot', 'MEMORY-ERROR-FALLBACK');
-      return new Response(JSON.stringify(staleMemory), {
+      return jsonOk(staleMemory, {
         status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}`,
+        cacheControl: `public, max-age=${CACHE_TTL_SECONDS}`,
+        corsHeaders,
+        extraHeaders: {
           'X-Cache': 'MEMORY-ERROR-FALLBACK',
-          ...corsHeaders,
         },
       });
     }
 
     recordCacheTelemetry('/api/ais-snapshot', 'ERROR');
-    return new Response(JSON.stringify({ error: getErrorMessage(error) }), {
+    return jsonError('Failed to fetch AIS snapshot', {
       status: 502,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      code: 'upstream_fetch_failed',
+      details: getErrorMessage(error),
+      corsHeaders,
     });
   } finally {
     inFlightByKey.delete(cacheKey);
